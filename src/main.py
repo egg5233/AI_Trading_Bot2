@@ -6,8 +6,10 @@ import os
 import sys
 import time
 import json
+import tempfile  # ← 新增
+from pathlib import Path  # ← 新增
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -60,22 +62,94 @@ class TradingBot:
         self.risk_manager = RiskManager(self.config)
         print(f"✅ 交易执行器初始化完成")
         
+        # === 新增：本地歷史檔案設定 ===
+        paths_cfg = self.config.get('paths', {})
+        # 你也可以在 trading_config.json 裡設定:
+        # "paths": {"state_dir": "./state", "history_file": "decision_history.jsonl", "max_history": 300}
+        self.state_dir = Path(paths_cfg.get('state_dir', './state'))
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.history_file = self.state_dir / paths_cfg.get('history_file', 'decision_history.jsonl')
+        self.max_history: int = int(paths_cfg.get('max_history', 300))
+
         # AI组件
         symbols = ConfigLoader.get_trading_symbols(self.config)
         precision_map = self._build_precision_map(symbols)
-        self.prompt_builder = PromptBuilder(self.config,precision_map)
+        self.prompt_builder = PromptBuilder(self.config, precision_map)
         self.decision_parser = DecisionParser()
         print(f"✅ AI组件初始化完成")
         
-        # 状态追踪
-        self.decision_history = []
+        # 状态追踪（從本地載入歷史）
+        self.decision_history: List[Dict[str, Any]] = self._load_decision_history(self.history_file, self.max_history)
         self.trade_count = 0
         
         print("=" * 60)
         print("🎉 AI交易机器人启动成功！")
         print("=" * 60)
         print()
-    
+
+    # === 新增：歷史檔案 I/O ===
+    def _load_decision_history(self, path: Path, limit: int) -> List[Dict[str, Any]]:
+        """
+        從本地檔案載入決策歷史。
+        支援 JSONL（每行一筆 JSON）或舊版 JSON 陣列格式。
+        僅保留最後 limit 筆；若檔案不存在回傳空陣列。
+        """
+        if not path.exists():
+            return []
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                first_char = f.read(1)
+                f.seek(0)
+                records: List[Dict[str, Any]] = []
+                if first_char == '[':
+                    # 舊版 JSON 陣列
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        records = [x for x in data if isinstance(x, dict)]
+                else:
+                    # JSONL
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                            if isinstance(obj, dict):
+                                records.append(obj)
+                        except json.JSONDecodeError:
+                            continue
+                # 只保留最後 limit 筆
+                return records[-limit:]
+        except Exception as e:
+            print(f"⚠️ 載入歷史檔案失敗: {e}")
+            return []
+
+    def _append_history_jsonl(self, path: Path, record: Dict[str, Any]) -> None:
+        """
+        以 JSONL 方式追加一筆歷史到檔案。
+        """
+        try:
+            with open(path, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(record, ensure_ascii=False))
+                f.write('\n')
+        except Exception as e:
+            print(f"⚠️ 寫入歷史檔案失敗: {e}")
+
+    def _compact_history_file(self, path: Path, records: List[Dict[str, Any]]) -> None:
+        """
+        壓縮歷史檔案：只保留 records 的內容（通常是最後 N 筆），
+        以臨時檔 + 原子替換確保安全。
+        """
+        try:
+            tmp = path.with_suffix(path.suffix + '.tmp')
+            with open(tmp, 'w', encoding='utf-8') as f:
+                for r in records:
+                    f.write(json.dumps(r, ensure_ascii=False))
+                    f.write('\n')
+            os.replace(tmp, path)
+        except Exception as e:
+            print(f"⚠️ 壓縮歷史檔案失敗: {e}")
+
     def _build_precision_map(self, symbols: list[str]) -> Dict[str, Dict[str, int]]:
         pm: Dict[str, Dict[str, int]] = {}
         for sym in symbols:
@@ -131,7 +205,7 @@ class TradingBot:
             account_summary = self.account_data.get_account_summary()
             
             # 获取历史决策
-            history = self.decision_history[-20:] if self.decision_history else []
+            history = self.decision_history[-300:] if self.decision_history else []
             # 构建多币种提示词
             prompt = self.prompt_builder.build_multi_symbol_analysis_prompt_json(all_symbols_data, all_positions, account_summary , history)
 
@@ -402,7 +476,7 @@ class TradingBot:
             print(f"❌ {symbol} 平仓失败: {e}")
     
     def save_decision(self, symbol: str, decision: Dict[str, Any], market_data: Dict[str, Any]):
-        """保存决策历史"""
+        """保存决策历史（記憶體 + 檔案）"""
         decision_record = {
             'timestamp': datetime.now().isoformat(),
             'symbol': symbol,
@@ -413,11 +487,20 @@ class TradingBot:
             'reason': decision['reason'],
             'price': market_data['realtime'].get('price', 0)
         }
+        # 先存記憶體
         self.decision_history.append(decision_record)
-        
-        # 只保留最近100条
-        if len(self.decision_history) > 100:
-            self.decision_history = self.decision_history[-100:]
+        # 僅保留最近 N 筆
+        if len(self.decision_history) > self.max_history:
+            self.decision_history = self.decision_history[-self.max_history:]
+        # 追加到檔案（JSONL）
+        self._append_history_jsonl(self.history_file, decision_record)
+        # 如檔案過大（以筆數判斷），壓縮重寫
+        try:
+            # 簡易判斷：若筆數剛好超過 N，就做一次壓縮
+            if len(self.decision_history) == self.max_history:
+                self._compact_history_file(self.history_file, self.decision_history)
+        except Exception as e:
+            print(f"⚠️ 壓縮歷史檔案時發生錯誤: {e}")
     
     def run_cycle(self):
         """执行一个交易周期"""

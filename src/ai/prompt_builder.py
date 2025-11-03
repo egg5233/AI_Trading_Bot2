@@ -414,7 +414,7 @@ class PromptBuilder:
     "action": "BUY_OPEN" | "SELL_OPEN" | "CLOSE" | "HOLD",
     "reason": "1-2句話說明決策理由（含關鍵指標與數值）",
     "confidence": 0.0 - 1.0,
-    "leverage": 1-100,
+    "leverage":  {self.config.get('trading', {}).get('default_leverage', 10)}-{self.config.get('trading', {}).get('max_leverage', 10)},
     "position_percent": 0-30,
     "take_profit_percent": 5.0,
     "stop_loss_percent": -2.0

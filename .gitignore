@@ -105,3 +105,4 @@ data/
 !config/*.json
 !requirements.txt
 
+state/decision_history.jsonl

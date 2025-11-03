@@ -314,7 +314,7 @@ class BinanceClient:
             修改结果
         """
         try:
-            result = self.client.futures_change_leverage(symbol=symbol, leverage=leverage)
+            result = self.client.futures_change_leverage(symbol=symbol, leverage=int(float(leverage)))
             return result
         except BinanceAPIException as e:
             print(f"⚠️ 修改杠杆失败 {symbol} {leverage}x: {e}")

@@ -7,6 +7,11 @@
     "max_position_percent": 15,
     "reserve_percent": 10
   },
+  "paths": {
+    "state_dir": "./state",
+    "history_file": "decision_history.jsonl",
+    "max_history": 300
+  },
   "risk": {
     "max_daily_loss_percent": 40,
     "max_consecutive_losses": 5,
