@@ -151,7 +151,7 @@ class TradeExecutor:
                 # 用「覆蓋式」TP/SL，會先清掉舊的
                 self.update_take_profit_stop_loss(
                     symbol=symbol,
-                    side='BUY',   # open_long 用 BUY；open_short 用 SELL
+                    side='SELL',   # open_long 用 BUY；open_short 用 SELL
                     quantity=adj_qty,
                     take_profit=take_profit,
                     stop_loss=stop_loss
